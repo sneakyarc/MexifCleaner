@@ -1,0 +1,220 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Mexif Cleaner - image metadata cleaner</title>
+<style>
+:root{--bg:#eef0f3;--fg:#12202b;--mut:#5b6872;--card:#fff;--bd:#d3d8de;--acc:#2f5bea;--bar:#12202b;--warn:#b42318}
+@media(prefers-color-scheme:dark){:root{--bg:#0e141a;--fg:#e8edf1;--mut:#93a1ac;--card:#161e26;--bd:#2a3541;--acc:#7b9bff;--bar:#e8edf1;--warn:#ff8a7a}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--fg);font:16px/1.5 system-ui,-apple-system,Segoe UI,sans-serif}
+main{max-width:720px;margin:0 auto;padding:40px 16px 64px}
+h1{font-size:2.4rem;line-height:1.1;margin:0 0 8px;letter-spacing:-.02em}
+h1 span{background:var(--bar);color:var(--bg);padding:0 .25em}
+p.lead{color:var(--mut);margin:0 0 28px;max-width:60ch}
+#drop{border:2px dashed var(--bd);border-radius:6px;padding:40px 16px;text-align:center;cursor:pointer;background:var(--card)}
+#drop:hover,#drop.on,#drop:focus-visible{border-color:var(--acc);outline:none}
+#drop b{display:block;font-size:1.1rem}
+#drop small{color:var(--mut)}
+.item{display:grid;grid-template-columns:96px 1fr;gap:16px;background:var(--card);border:1px solid var(--bd);border-radius:6px;padding:16px;margin-top:16px}
+.item img{width:96px;height:96px;object-fit:cover;border-radius:4px;background:var(--bd)}
+.name{font-weight:600;overflow-wrap:anywhere}
+.size{color:var(--mut);font-size:.875rem}
+.chips{display:flex;flex-wrap:wrap;gap:6px;margin:8px 0}
+.chip{font-size:.8rem;padding:1px 8px;border-radius:3px;background:var(--bar);color:var(--bg)}
+.ok{color:var(--mut);margin:8px 0}
+table{border-collapse:collapse;width:100%;font-size:.875rem;margin:8px 0}
+td{padding:3px 0;border-top:1px solid var(--bd);vertical-align:top}
+td:first-child{color:var(--mut);width:32%;padding-right:8px}
+td.gps{color:var(--warn);font-weight:600}
+td.v{overflow-wrap:anywhere}
+.row{display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin-top:8px}
+a.btn{background:var(--acc);color:#fff;text-decoration:none;padding:8px 14px;border-radius:4px;font-weight:600}
+@media(prefers-color-scheme:dark){a.btn{color:#0e141a}}
+a.btn:focus-visible{outline:2px solid var(--fg);outline-offset:2px}
+.note{color:var(--mut);font-size:.85rem}
+.err{color:var(--warn)}
+footer{margin-top:32px;color:var(--mut);font-size:.85rem}
+@media(max-width:480px){.item{grid-template-columns:1fr}.item img{width:100%;height:160px}}
+</style>
+</head>
+<body>
+<main>
+<h1>Mexif <span>Cleaner</span></h1>
+<p class="lead">Inspect what a photo reveals about you — camera, time, GPS location and other available metadata — then download a cleaned copy. Files stay in your browser.</p>
+
+<div id="drop" tabindex="0" role="button" aria-label="Choose images">
+  <b>Drop images here or click to choose</b>
+  <small>JPEG and PNG are cleaned without recompression. WebP is re-encoded. Select one or more images.</small>
+</div>
+<input id="file" type="file" accept="image/jpeg,image/png,image/webp" multiple hidden>
+<div id="list" aria-live="polite"></div>
+
+<footer>Everything runs locally in your browser. Metadata availability depends on the original file; some platforms remove it before you receive the image.</footer>
+</main>
+
+<script src="https://cdn.jsdelivr.net/npm/exifr/dist/full.umd.js"></script>
+<script>
+const $ = s => document.querySelector(s);
+const drop = $('#drop'), inp = $('#file'), list = $('#list');
+drop.onclick = () => inp.click();
+drop.onkeydown = e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); inp.click(); } };
+drop.ondragover = e => { e.preventDefault(); drop.classList.add('on'); };
+drop.ondragleave = () => drop.classList.remove('on');
+drop.ondrop = e => { e.preventDefault(); drop.classList.remove('on'); handle(e.dataTransfer.files); };
+inp.onchange = () => { handle(inp.files); inp.value = ''; };
+async function handle(files) { for (const f of files) await add(f); }
+function kb(n) { return n >= 1048576 ? (n / 1048576).toFixed(2) + ' MB' : n >= 1024 ? (n / 1024).toFixed(1) + ' KB' : n + ' B'; }
+function text(v) {
+  if (v === null || v === undefined || v === '') return '—';
+  if (v instanceof Date) return v.toISOString();
+  if (Array.isArray(v)) return v.map(text).join(', ');
+  if (ArrayBuffer.isView(v)) return Array.from(v).join(', ');
+  if (typeof v === 'object') { try { return JSON.stringify(v); } catch { return String(v); } }
+  return String(v);
+}
+function safe(v) { return String(v).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+function flatten(obj, prefix = '', out = {}) {
+  if (!obj || typeof obj !== 'object' || obj instanceof Date || ArrayBuffer.isView(obj)) { if (prefix) out[prefix] = text(obj); return out; }
+  for (const [k,v] of Object.entries(obj)) {
+    if (v === undefined || v === null || v === '') continue;
+    const key = prefix ? prefix + '.' + k : k;
+    if (v instanceof Date) out[key] = v.toISOString();
+    else if (Array.isArray(v) || ArrayBuffer.isView(v)) out[key] = text(v);
+    else if (typeof v === 'object') flatten(v, key, out);
+    else out[key] = text(v);
+  }
+  return out;
+}
+function category(k) {
+  const s = k.toLowerCase();
+  if (/gps|latitude|longitude|altitude|destination|direction/.test(s)) return 'GPS / Location';
+  if (/make|model|lens|serial|owner|artist|copyright|creator|author|software|hostcomputer|body/.test(s)) return 'Device / Creator';
+  if (/date|time|timestamp|modify|digitiz/.test(s)) return 'Dates / Time';
+  if (/iso|exposure|shutter|aperture|fnumber|focal|flash|whitebalance|metering|scene|brightness|contrast|saturation|sharpness|lightsource/.test(s)) return 'Camera / Exposure';
+  if (/iptc|xmp|caption|keyword|subject|rating|label|rights|description|title|instructions|credit|source/.test(s)) return 'IPTC / XMP / Descriptive';
+  if (/icc|profile|color|colour/.test(s)) return 'Colour Profile';
+  if (/width|height|orientation|resolution|pixel|mime|file/.test(s)) return 'Image Properties';
+  return 'Other Metadata';
+}
+function makeTable(entries) {
+  const t = document.createElement('table');
+  for (const [k,v] of entries) {
+    const tr = t.insertRow(), a = tr.insertCell(), b = tr.insertCell();
+    a.textContent = k; b.textContent = v; b.className = 'v';
+    if (/gps|latitude|longitude|altitude/i.test(k)) { a.className = 'gps'; b.className = 'v gps'; }
+  }
+  return t;
+}
+function findValue(tags, names) { for (const n of names) if (tags[n] !== undefined && tags[n] !== null && tags[n] !== '') return text(tags[n]); return ''; }
+function gpsSummary(tags) {
+  const lat = tags.latitude ?? tags.GPSLatitude, lon = tags.longitude ?? tags.GPSLongitude;
+  return typeof lat === 'number' && typeof lon === 'number' ? lat.toFixed(6) + ', ' + lon.toFixed(6) : '';
+}
+async function inspect(file) {
+  if (!window.exifr || typeof window.exifr.parse !== 'function') throw new Error('Metadata reader did not load. Connect to the internet and reload the page.');
+  // Parse supported EXIF, GPS, IPTC, XMP and ICC-related metadata. The parser only returns fields present and supported in this file.
+  return await window.exifr.parse(file, { tiff: true, exif: true, gps: true, iptc: true, xmp: true, icc: true, jfif: true, ihdr: true, reviveValues: true, translateValues: true });
+}
+function cleanJPEG(b) {
+  const v = new DataView(b.buffer, b.byteOffset, b.byteLength), keep = [b.subarray(0,2)], found = [];
+  let p = 2;
+  while (p + 4 <= b.length && b[p] === 0xFF) {
+    const m = b[p+1];
+    if (m === 0xDA) break;
+    if (m === 0xD9 || m === 0x01 || (m >= 0xD0 && m <= 0xD7)) { keep.push(b.subarray(p,p+2)); p += 2; continue; }
+    const len = v.getUint16(p+2);
+    if (len < 2 || p + 2 + len > b.length) throw new Error('Malformed JPEG segment.');
+    const id = String.fromCharCode(...b.subarray(p+4, Math.min(p+24,b.length)));
+    let remove = false, label = '';
+    if (m === 0xE1) { remove = true; label = id.startsWith('Exif') ? 'EXIF' : id.startsWith('http://ns.adobe.com/xap') ? 'XMP' : 'APP1 metadata'; }
+    else if (m === 0xED) { remove = true; label = 'IPTC'; }
+    else if (m === 0xFE) { remove = true; label = 'JPEG comment'; }
+    else if (m >= 0xE3 && m <= 0xEF && m !== 0xEE && m !== 0xE2) { remove = true; label = 'APP' + (m - 0xE0) + ' metadata'; }
+    if (remove) found.push(label); else keep.push(b.subarray(p,p+2+len));
+    p += 2 + len;
+  }
+  keep.push(b.subarray(p));
+  return { blob: new Blob(keep,{type:'image/jpeg'}), found: [...new Set(found)] };
+}
+function cleanPNG(b) {
+  const v = new DataView(b.buffer,b.byteOffset,b.byteLength), bad = new Set(['tEXt','zTXt','iTXt','eXIf','tIME']);
+  const keep = [b.subarray(0,8)], found = []; let p = 8;
+  while (p + 12 <= b.length) {
+    const len = v.getUint32(p), type = String.fromCharCode(...b.subarray(p+4,p+8)), end = p+12+len;
+    if (end > b.length) throw new Error('Malformed PNG chunk.');
+    if (bad.has(type)) found.push(type); else keep.push(b.subarray(p,end));
+    p = end; if (type === 'IEND') break;
+  }
+  keep.push(b.subarray(p));
+  return { blob: new Blob(keep,{type:'image/png'}), found: [...new Set(found)] };
+}
+async function cleanWebP(file) {
+  const bmp = await createImageBitmap(file), c = document.createElement('canvas'); c.width = bmp.width; c.height = bmp.height;
+  c.getContext('2d').drawImage(bmp,0,0); bmp.close?.();
+  const blob = await new Promise((resolve,reject) => c.toBlob(x => x ? resolve(x) : reject(new Error('Could not re-encode this WebP image.')), 'image/webp', .95));
+  return { blob, found: ['Re-encoded via canvas; metadata is not individually audited'] };
+}
+async function clean(file) {
+  const b = new Uint8Array(await file.arrayBuffer());
+  if (b[0] === 0xFF && b[1] === 0xD8) return cleanJPEG(b);
+  if (b[0] === 0x89 && b[1] === 0x50 && b[2] === 0x4E && b[3] === 0x47) return cleanPNG(b);
+  if (file.type === 'image/webp') return cleanWebP(file);
+  throw new Error('Unsupported format. Use JPEG, PNG or WebP.');
+}
+async function add(f) {
+  const card = document.createElement('div'); card.className = 'item';
+  const img = document.createElement('img'); img.alt = 'Image preview'; img.src = URL.createObjectURL(f);
+  const info = document.createElement('div'); card.append(img,info); list.prepend(card);
+  const name = document.createElement('div'); name.className = 'name'; name.textContent = f.name; info.append(name);
+  try {
+    if (!['image/jpeg','image/png','image/webp'].includes(f.type)) throw new Error('Unsupported format. Use JPEG, PNG or WebP.');
+    const raw = await inspect(f), tags = raw && typeof raw === 'object' ? raw : {}, entries = Object.entries(flatten(tags));
+    const size = document.createElement('div'); size.className = 'size'; size.textContent = f.type.toUpperCase().replace('IMAGE/','') + ' · ' + kb(f.size); info.append(size);
+    const gps = gpsSummary(tags);
+    const chips = document.createElement('div'); chips.className = 'chips';
+    const labels = [entries.length + ' metadata fields', gps ? 'GPS location present' : 'No GPS coordinates found'];
+    labels.forEach(x => { const s = document.createElement('span'); s.className = 'chip'; s.textContent = x; chips.append(s); }); info.append(chips);
+    const width = tags.ImageWidth ?? tags.ExifImageWidth ?? img.naturalWidth;
+    const height = tags.ImageHeight ?? tags.ExifImageHeight ?? img.naturalHeight;
+    const quick = [
+      ['Dimensions', width && height ? width + ' × ' + height + ' px' : ''],
+      ['Camera make', findValue(tags,['Make'])], ['Camera model', findValue(tags,['Model'])],
+      ['Date taken', findValue(tags,['DateTimeOriginal','CreateDate','DateTimeDigitized','DateTime'])],
+      ['GPS coordinates',gps], ['ISO',findValue(tags,['ISO','ISOSpeedRatings','PhotographicSensitivity'])],
+      ['Aperture',findValue(tags,['FNumber','ApertureValue'])], ['Shutter speed',findValue(tags,['ExposureTime','ShutterSpeedValue'])],
+      ['Focal length',findValue(tags,['FocalLength'])], ['Flash',findValue(tags,['Flash'])],
+      ['White balance',findValue(tags,['WhiteBalance'])], ['Lens',findValue(tags,['LensModel','Lens'])],
+      ['Software',findValue(tags,['Software'])], ['Copyright',findValue(tags,['Copyright'])]
+    ].filter(x => x[1]);
+    if (quick.length) info.append(makeTable(quick));
+    const groups = {};
+    entries.forEach(([k,v]) => { const c = category(k); (groups[c] ||= []).push([k,v]); });
+    const details = document.createElement('details'); details.className = 'raw';
+    const summary = document.createElement('summary'); summary.textContent = 'View all metadata (' + entries.length + ' fields)'; details.append(summary);
+    const order = ['GPS / Location','Device / Creator','Dates / Time','Camera / Exposure','IPTC / XMP / Descriptive','Colour Profile','Image Properties','Other Metadata'];
+    for (const g of order) if (groups[g]?.length) {
+      const h = document.createElement('p'); h.className = 'note'; h.textContent = g; details.append(h);
+      details.append(makeTable(groups[g].sort((a,b)=>a[0].localeCompare(b[0]))));
+    }
+    if (entries.length) info.append(details);
+    else { const no = document.createElement('div'); no.className = 'ok'; no.textContent = 'No readable metadata found. It may have been removed already, or this file may not contain supported metadata.'; info.append(no); }
+    const row = document.createElement('div'); row.className = 'row';
+    const dl = document.createElement('a'); dl.className = 'btn'; dl.textContent = 'Download clean copy';
+    dl.href = '#'; dl.onclick = async e => {
+      e.preventDefault(); dl.textContent = 'Cleaning…'; dl.style.pointerEvents = 'none';
+      try {
+        const result = await clean(f), url = URL.createObjectURL(result.blob), a = document.createElement('a');
+        a.href = url; a.download = f.name.replace(/(\.[^.]+)?$/, '_clean$1'); a.click(); setTimeout(()=>URL.revokeObjectURL(url),30000);
+        dl.textContent = 'Download clean copy';
+        const note = document.createElement('div'); note.className = 'note'; note.textContent = 'Cleaned copy created. Removed/handled: ' + (result.found.join(', ') || 'no targeted metadata segments found') + '. Verify output before using it for sensitive files.'; row.after(note);
+      } catch (e2) { dl.textContent = 'Cleaning failed'; const err = document.createElement('div'); err.className = 'err'; err.textContent = e2.message || 'Could not clean this image.'; row.after(err); }
+      finally { dl.style.pointerEvents = ''; }
+    };
+    row.append(dl); info.append(row);
+  } catch (e) { const er = document.createElement('div'); er.className = 'err'; er.textContent = e.message || 'Could not inspect this file.'; info.append(er); }
+}
+</script>
+</body>
+</html>
